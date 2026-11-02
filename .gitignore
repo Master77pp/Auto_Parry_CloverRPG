@@ -1,0 +1,52 @@
+# ===== Secretos (nunca subir) =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets.json
+secrets.yaml
+credentials.json
+service-account*.json
+
+# ===== Roblox Studio =====
+# Archivos de bloqueo que Studio crea al tener un place abierto
+*.rbxl.lock
+*.rbxlx.lock
+*.rbxm.lock
+*.rbxmx.lock
+# Copias de seguridad automáticas de Studio
+*.rbxl.bak
+*.rbxlx.bak
+*.rbxm.bak
+*.rbxmx.bak
+
+# ===== Rojo / herramientas Luau =====
+/sourcemap.json
+.rojo/
+/build/
+/dist/
+*.rbxlx.expect
+
+# ===== Dependencias =====
+node_modules/
+packages/
+Package/
+wally.lock.bak
+
+# ===== Editores / IDE =====
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.code-workspace
+*.swp
+
+# ===== Logs y temporales =====
+*.log
+npm-debug.log*
+*.tmp
+*.bak
+Thumbs.db
+desktop.ini
+.DS_Store
