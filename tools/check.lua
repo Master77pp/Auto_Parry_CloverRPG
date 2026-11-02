@@ -15,7 +15,10 @@ afirmar(_G.Brotherhood ~= nil, "_G.Brotherhood no fue publicado")
 afirmar(_G.Brotherhood.gui ~= nil, "ScreenGui ausente")
 afirmar(_G.Brotherhood.ventana ~= nil, "Ventana ausente")
 afirmar(_G.Brotherhood.contenedor == "CoreGui", "contenedor inesperado: " .. tostring(_G.Brotherhood.contenedor))
-afirmar(_G.Brotherhood.version == "2.0.0", "version incorrecta")
+afirmar(_G.Brotherhood.parry ~= nil, "el motor de parry no quedo expuesto en la API")
+afirmar(type(_G.Brotherhood.activarParry) == "function", "activarParry no expuesto")
+afirmar(type(_G.Brotherhood.captura) == "function", "captura no expuesta")
+afirmar(_G.Brotherhood.version == "2.2.0", "version incorrecta")
 
 -- 2. La API anterior sigue viva
 afirmar(type(_G.AutoParry) == "table", "_G.AutoParry ausente")

@@ -7,22 +7,25 @@
 		loadstring(game:HttpGet("https://raw.githubusercontent.com/Master77pp/Auto_Parry_CloverRPG/main/loader.lua"))()
 
 	Que hace:
-	  1. Descarga src/main.lua desde GitHub (con cache-busting por VERSION).
+	  1. Descarga src/main.lua y los modulos de src/ desde GitHub.
 	  2. Prueba los metodos de descarga disponibles, en orden y con pcall.
-	  3. Compila con loadstring y ejecuta en un hilo propio (task.spawn),
+	  3. Expone los modulos en _G.__BH_MODULES para que la interfaz los compile.
+	  4. Compila con loadstring y ejecuta en un hilo propio (task.spawn),
 	     porque el hilo del runner de Xeno no admite ceder (yield).
-	  4. Cualquier fallo se reporta en pantalla y en la consola, nunca en silencio.
+	  5. Cualquier fallo se reporta en pantalla y en la consola, nunca en silencio.
 
-	Metodos de descarga usados (todos presentes en Xeno; el resto ni se intenta):
-	  game:HttpGet  -> metodo principal
-	  request       -> respaldo UNC
-	  http_request  -> respaldo UNC alternativo
+	Si un modulo opcional falla, la interfaz arranca igual y lo indica en pantalla.
 ]]
 
 local REPO    = "Master77pp/Auto_Parry_CloverRPG"
 local BRANCH  = "main"
 local ENTRY   = "src/main.lua"
-local VERSION = "2.0.0"
+local VERSION = "2.2.0"
+
+-- Modulos opcionales: nombre logico -> ruta en el repo
+local MODULOS = {
+	autoparry = "src/autoparry.lua",
+}
 
 --------------------------------------------------------------------
 -- Utilidades
@@ -48,84 +51,92 @@ local function identificarEjecutor()
 	return "Desconocido"
 end
 
-local function comprobar(nombre, fn)
-	if typeof(fn) == "function" then
-		return true
-	end
-	return false
+local function disponible(fn)
+	return typeof(fn) == "function"
 end
 
 --------------------------------------------------------------------
 -- Descarga
 --------------------------------------------------------------------
 
-local URL = ("https://raw.githubusercontent.com/%s/%s/%s?v=%s"):format(REPO, BRANCH, ENTRY, VERSION)
+local function construirMetodos(url)
+	local metodos = {}
 
-local metodos = {}
+	local okHttpGet, fnHttpGet = pcall(function()
+		return game.HttpGet
+	end)
 
-local okHttpGet, fnHttpGet = pcall(function()
-	return game.HttpGet
-end)
-
-if okHttpGet and type(fnHttpGet) == "function" then
-	table.insert(metodos, {
-		nombre = "game:HttpGet",
-		ejecutar = function()
-			return fnHttpGet(game, URL)
-		end,
-	})
-end
-
-if typeof(request) == "function" then
-	table.insert(metodos, {
-		nombre = "request",
-		ejecutar = function()
-			local r = request({ Url = URL, Method = "GET" })
-			if type(r) == "table" then
-				return r.Body or r.body
-			end
-		end,
-	})
-end
-
-if typeof(http_request) == "function" then
-	table.insert(metodos, {
-		nombre = "http_request",
-		ejecutar = function()
-			local r = http_request({ Url = URL, Method = "GET" })
-			if type(r) == "table" then
-				return r.Body or r.body
-			end
-		end,
-	})
-end
-
-if #metodos == 0 then
-	aviso("Error: este ejecutor no expone ninguna funcion HTTP")
-	error("[Brotherhood] sin metodos de descarga disponibles (ni game:HttpGet, ni request)", 0)
-end
-
-local fuente, metodo, ultimoError
-local diagnosticos = {}
-
-for _, candidato in ipairs(metodos) do
-	local ok, resultado = pcall(candidato.ejecutar)
-
-	if not ok then
-		table.insert(diagnosticos, ("%s: excepcion (%s)"):format(candidato.nombre, tostring(resultado)))
-		ultimoError = tostring(resultado)
-	elseif type(resultado) ~= "string" or resultado == "" then
-		table.insert(diagnosticos, ("%s: respuesta vacia"):format(candidato.nombre))
-		ultimoError = "respuesta vacia"
-	elseif resultado:sub(1, 14) == "404: Not Found" then
-		table.insert(diagnosticos, ("%s: 404 (revisa REPO/BRANCH/ruta)"):format(candidato.nombre))
-		ultimoError = "404 en " .. ENTRY
-	else
-		fuente = resultado
-		metodo = candidato.nombre
-		break
+	if okHttpGet and type(fnHttpGet) == "function" then
+		table.insert(metodos, {
+			nombre = "game:HttpGet",
+			ejecutar = function()
+				return fnHttpGet(game, url)
+			end,
+		})
 	end
+
+	if typeof(request) == "function" then
+		table.insert(metodos, {
+			nombre = "request",
+			ejecutar = function()
+				local r = request({ Url = url, Method = "GET" })
+				if type(r) == "table" then
+					return r.Body or r.body
+				end
+			end,
+		})
+	end
+
+	if typeof(http_request) == "function" then
+		table.insert(metodos, {
+			nombre = "http_request",
+			ejecutar = function()
+				local r = http_request({ Url = url, Method = "GET" })
+				if type(r) == "table" then
+					return r.Body or r.body
+				end
+			end,
+		})
+	end
+
+	return metodos
 end
+
+local function descargar(ruta)
+	local url = ("https://raw.githubusercontent.com/%s/%s/%s?v=%s"):format(REPO, BRANCH, ruta, VERSION)
+	local metodos = construirMetodos(url)
+	local diagnosticos = {}
+	local ultimoError = "sin metodos disponibles"
+
+	if #metodos == 0 then
+		return nil, nil, diagnosticos, ultimoError
+	end
+
+	for _, candidato in ipairs(metodos) do
+		local ok, resultado = pcall(candidato.ejecutar)
+
+		if not ok then
+			table.insert(diagnosticos, ("%s: excepcion (%s)"):format(candidato.nombre, tostring(resultado)))
+			ultimoError = tostring(resultado)
+		elseif type(resultado) ~= "string" or resultado == "" then
+			table.insert(diagnosticos, ("%s: respuesta vacia"):format(candidato.nombre))
+			ultimoError = "respuesta vacia"
+		elseif resultado:sub(1, 14) == "404: Not Found" then
+			table.insert(diagnosticos, ("%s: 404 (revisa REPO/BRANCH/ruta)"):format(candidato.nombre))
+			ultimoError = "404 en " .. ruta
+		else
+			return resultado, candidato.nombre, diagnosticos
+		end
+	end
+
+	return nil, nil, diagnosticos, ultimoError
+end
+
+--------------------------------------------------------------------
+-- Interfaz principal
+--------------------------------------------------------------------
+
+local fuente, metodo, diagnosticos, ultimoError = descargar(ENTRY)
 
 if not fuente then
 	for _, linea in ipairs(diagnosticos) do
@@ -136,15 +147,41 @@ if not fuente then
 end
 
 --------------------------------------------------------------------
+-- Modulos opcionales
+--------------------------------------------------------------------
+
+local modulos = {}
+local fallidos = {}
+
+for nombre, ruta in pairs(MODULOS) do
+	local contenido, metodoModulo, diagModulo, errorModulo = descargar(ruta)
+
+	if contenido then
+		modulos[nombre] = contenido
+		print(("[Brotherhood] modulo %s cargado via %s (%d bytes)"):format(nombre, tostring(metodoModulo), #contenido))
+	else
+		table.insert(fallidos, nombre)
+		for _, linea in ipairs(diagModulo or {}) do
+			warn("[Brotherhood] " .. linea)
+		end
+		warn(("[Brotherhood] modulo %s no disponible: %s"):format(nombre, tostring(errorModulo)))
+	end
+end
+
+_G.__BH_MODULES = modulos
+
+--------------------------------------------------------------------
 -- Diagnostico de compatibilidad
 --------------------------------------------------------------------
 
 print("[Brotherhood] ejecutor:    " .. identificarEjecutor())
-print("[Brotherhood] descarga via: " .. metodo)
+print("[Brotherhood] descarga via: " .. tostring(metodo))
 print("[Brotherhood] bytes:       " .. tostring(#fuente))
-print(("[Brotherhood] loadstring:   %s"):format(tostring(comprobar("loadstring", loadstring))))
-print(("[Brotherhood] gethui:       %s"):format(tostring(comprobar("gethui", gethui))))
-print(("[Brotherhood] setclipboard: %s"):format(tostring(comprobar("setclipboard", setclipboard))))
+print(("[Brotherhood] loadstring:   %s"):format(tostring(disponible(loadstring))))
+print(("[Brotherhood] gethui:       %s"):format(tostring(disponible(gethui))))
+print(("[Brotherhood] setclipboard: %s"):format(tostring(disponible(setclipboard))))
+print(("[Brotherhood] keypress:     %s"):format(tostring(disponible(keypress))))
+print(("[Brotherhood] modulos:      %d/%d"):format(#modulos, #modulos + #fallidos))
 
 --------------------------------------------------------------------
 -- Compilacion y ejecucion
@@ -165,5 +202,10 @@ task.spawn(function()
 	if not ok then
 		warn("[Brotherhood] error en ejecucion: " .. tostring(errorEjecucion))
 		aviso("Error al iniciar la interfaz: " .. tostring(errorEjecucion))
+		return
+	end
+
+	if #fallidos > 0 then
+		aviso("Modulos no disponibles: " .. table.concat(fallidos, ", "))
 	end
 end)

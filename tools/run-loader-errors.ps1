@@ -7,25 +7,31 @@ $raiz = Split-Path -Parent $PSScriptRoot
 $luau = Join-Path $env:TEMP "luau\luau.exe"
 
 $mock   = [IO.File]::ReadAllText((Join-Path $raiz "tools\mock-roblox.lua"), [Text.Encoding]::UTF8)
-$fuente = [IO.File]::ReadAllText((Join-Path $raiz "src\main.lua"), [Text.Encoding]::UTF8)
+$main   = [IO.File]::ReadAllText((Join-Path $raiz "src\main.lua"), [Text.Encoding]::UTF8)
+$motor  = [IO.File]::ReadAllText((Join-Path $raiz "src\autoparry.lua"), [Text.Encoding]::UTF8)
 $loader = [IO.File]::ReadAllText((Join-Path $raiz "loader.lua"), [Text.Encoding]::UTF8)
 
-$fuenteLiteral = "__FUENTE = [==[`n" + $fuente + "`n]==]`n"
+$literales = "__FUENTE_MAIN = [==[`n" + $main + "`n]==]`n" +
+             "__FUENTE_MOTOR = [==[`n" + $motor + "`n]==]`n"
 
-$casoA = $fuenteLiteral + @'
+$casoA = $literales + @'
 rawset(game, "HttpGet", function() return "404: Not Found" end)
-request = function(_tabla)
-	return { Body = __FUENTE }
+request = function(tabla)
+	if tostring(tabla.Url):find("autoparry", 1, true) then
+		return { Body = __FUENTE_MOTOR }
+	end
+	return { Body = __FUENTE_MAIN }
 end
 local ok, err = pcall(function()
 '@ + "`n" + $loader + @'
 end)
 assert(ok, "el loader fallo con fallback disponible: " .. tostring(err))
 assert(_G.Brotherhood ~= nil, "la GUI no se construyo tras el fallback")
-print("[TEST] A OK: 404 -> fallback request -> GUI cargada")
+assert(_G.Brotherhood.parry ~= nil, "el motor de parry no se monto tras el fallback")
+print("[TEST] A OK: 404 -> fallback request -> GUI + motor cargados")
 '@
 
-$casoB = $fuenteLiteral + @'
+$casoB = $literales + @'
 rawset(game, "HttpGet", function() return "404: Not Found" end)
 request = function() return { Body = "" } end
 http_request = function() return nil end

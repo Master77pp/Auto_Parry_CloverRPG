@@ -1,7 +1,7 @@
 --!nocheck
--- Mock minimo de las APIs de Roblox usadas por Brotherhood.
--- Objetivo: ejecutar src/main.lua fuera del juego y detectar errores de
--- logica (nil index, orden de inicializacion, callbacks rotos).
+-- Mock minimo de las APIs de Roblox usadas por Brotherhood y el motor de
+-- Auto Parry. Objetivo: ejecutar el codigo fuera del juego y detectar errores
+-- de logica (nil index, orden de inicializacion, callbacks rotos, tiempos).
 
 local SENALES = {
 	MouseEnter = true,
@@ -14,6 +14,10 @@ local SENALES = {
 	Changed = true,
 	Activated = true,
 	TouchTap = true,
+	AnimationPlayed = true,
+	HealthChanged = true,
+	DescendantAdded = true,
+	ChildAdded = true,
 }
 
 local function nuevaSenal()
@@ -36,7 +40,11 @@ local function nuevaSenal()
 		return self:Connect(fn)
 	end
 	function s:Fire(...)
-		for _, fn in ipairs(callbacks) do
+		local copia = {}
+		for i, fn in ipairs(callbacks) do
+			copia[i] = fn
+		end
+		for _, fn in ipairs(copia) do
 			fn(...)
 		end
 	end
@@ -44,6 +52,16 @@ local function nuevaSenal()
 end
 
 local Instance_mt = {}
+
+local function descendientes(inst, acc)
+	acc = acc or {}
+	local hijos = rawget(inst, "_children") or {}
+	for _, hijo in ipairs(hijos) do
+		table.insert(acc, hijo)
+		descendientes(hijo, acc)
+	end
+	return acc
+end
 
 function Instance_mt.__index(self, k)
 	if k == "Parent" then
@@ -74,7 +92,41 @@ function Instance_mt.__index(self, k)
 	end
 	if k == "GetChildren" then
 		return function(yo)
-			return rawget(yo, "_children") or {}
+			local copia = {}
+			for i, hijo in ipairs(rawget(yo, "_children") or {}) do
+				copia[i] = hijo
+			end
+			return copia
+		end
+	end
+	if k == "GetDescendants" then
+		return function(yo)
+			return descendientes(yo, {})
+		end
+	end
+	if k == "FindFirstChildOfClass" then
+		return function(yo, clase)
+			for _, hijo in ipairs(rawget(yo, "_children") or {}) do
+				if rawget(hijo, "ClassName") == clase then
+					return hijo
+				end
+			end
+			return nil
+		end
+	end
+	if k == "FindFirstChild" then
+		return function(yo, nombre)
+			for _, hijo in ipairs(rawget(yo, "_children") or {}) do
+				if rawget(hijo, "Name") == nombre then
+					return hijo
+				end
+			end
+			return nil
+		end
+	end
+	if k == "IsA" then
+		return function(yo, clase)
+			return rawget(yo, "ClassName") == clase or clase == "Instance"
 		end
 	end
 	if k == "Clone" then
@@ -113,6 +165,21 @@ function criarFalso(clase)
 		_children = {},
 	}
 	return setmetatable(obj, Instance_mt)
+end
+
+-- Vector3 con resta (para distancias)
+local Vector3_mt = {}
+Vector3_mt.__index = Vector3_mt
+function Vector3_mt.__sub(a, b)
+	local dx, dy, dz = a.X - b.X, a.Y - b.Y, a.Z - b.Z
+	local magnitud = math.sqrt(dx * dx + dy * dy + dz * dz)
+	return setmetatable({ X = dx, Y = dy, Z = dz, Magnitude = magnitud }, Vector3_mt)
+end
+
+Vector3 = {}
+
+function Vector3.new(x, y, z)
+	return setmetatable({ X = x or 0, Y = y or 0, Z = z or 0, Magnitude = 0 }, Vector3_mt)
 end
 
 -- typeof: los objetos falsos se comportan como Instance
@@ -169,7 +236,32 @@ Enum = setmetatable({}, {
 	end,
 })
 
--- task
+-- Reloj virtual y cola de tareas
+__reloj = 0
+local tareas = {}
+
+function __avanzar(dt)
+	local objetivo = __reloj + (dt or 0)
+	while true do
+		local elegido, indice = nil, nil
+		for i, tarea in ipairs(tareas) do
+			if tarea.t <= objetivo and (not elegido or tarea.t < elegido.t) then
+				elegido, indice = tarea, i
+			end
+		end
+		if not elegido then
+			break
+		end
+		table.remove(tareas, indice)
+		__reloj = elegido.t
+		local ok, err = pcall(elegido.fn)
+		if not ok then
+			print("[mock] tarea fallo: " .. tostring(err))
+		end
+	end
+	__reloj = objetivo
+end
+
 task = {
 	spawn = function(fn, ...)
 		local hilo = coroutine.create(fn)
@@ -178,8 +270,12 @@ task = {
 	wait = function()
 		return 0
 	end,
-	delay = function(_tiempo, _fn) end,
-	defer = function(_fn) end,
+	delay = function(tiempo, fn)
+		table.insert(tareas, { t = __reloj + (tiempo or 0), fn = fn })
+	end,
+	defer = function(fn)
+		table.insert(tareas, { t = __reloj, fn = fn })
+	end,
 }
 
 -- Instance.new
@@ -192,7 +288,7 @@ Instance = {
 -- Servicios falsos
 local function servicio(nombre)
 	local s = criarFalso("Service")
-	s.Name = nombre
+	rawset(s, "Name", nombre)
 	return s
 end
 
@@ -202,6 +298,7 @@ local LocalPlayer = criarFalso("Player")
 rawset(LocalPlayer, "WaitForChild", function(_, _n, _t)
 	return PlayerGui
 end)
+rawset(LocalPlayer, "Character", nil)
 rawset(Players, "LocalPlayer", LocalPlayer)
 
 local TweenService = servicio("TweenService")
@@ -217,12 +314,22 @@ local CoreGui = servicio("CoreGui")
 local StarterGui = servicio("StarterGui")
 rawset(StarterGui, "SetCore", function() end)
 
+-- Registro de teclas enviadas
+__teclas = {}
+
+local VirtualInputManager = servicio("VirtualInputManager")
+rawset(VirtualInputManager, "SendKeyEvent", function(_self, estado, tecla, _texto, _juego)
+	table.insert(__teclas, { via = "VirtualInputManager", estado = estado, tecla = tostring(tecla) })
+	return true
+end)
+
 local servicios = {
 	Players = Players,
 	TweenService = TweenService,
 	UserInputService = UserInputService,
 	CoreGui = CoreGui,
 	StarterGui = StarterGui,
+	VirtualInputManager = VirtualInputManager,
 }
 
 game = criarFalso("DataModel")
@@ -254,4 +361,83 @@ __mockTypeof = typeof
 local loadstringReal = loadstring
 loadstring = function(fuente, nombre)
 	return loadstringReal("local typeof = __mockTypeof\n" .. fuente, nombre)
+end
+
+--------------------------------------------------------------------
+-- Constructores de escenario
+--------------------------------------------------------------------
+
+function __crearPersonaje()
+	local personaje = criarFalso("Model")
+	rawset(personaje, "Name", "Jugador")
+
+	local raiz = criarFalso("Part")
+	rawset(raiz, "Name", "HumanoidRootPart")
+	rawset(raiz, "Position", Vector3.new(0, 0, 0))
+	raiz.Parent = personaje
+
+	local humanoide = criarFalso("Humanoid")
+	rawset(humanoide, "Health", 100)
+	rawset(humanoide, "MaxHealth", 100)
+	rawset(humanoide, "GetState", function()
+		return Enum.HumanoidStateType.Running
+	end)
+	humanoide.Parent = personaje
+
+	local animator = criarFalso("Animator")
+	animator.Parent = humanoide
+
+	rawset(LocalPlayer, "Character", personaje)
+	return personaje, humanoide, animator
+end
+
+function __crearEnemigo(nombre, posicion, conAnimator)
+	local modelo = criarFalso("Model")
+	rawset(modelo, "Name", nombre)
+
+	local raiz = criarFalso("Part")
+	rawset(raiz, "Name", "HumanoidRootPart")
+	rawset(raiz, "Position", posicion or Vector3.new(0, 0, 5))
+	raiz.Parent = modelo
+	rawset(modelo, "PrimaryPart", raiz)
+
+	local humanoide = criarFalso("Humanoid")
+	rawset(humanoide, "Health", 130)
+	rawset(humanoide, "MaxHealth", 130)
+	rawset(humanoide, "GetState", function()
+		return Enum.HumanoidStateType.Running
+	end)
+	humanoide.Parent = modelo
+
+	local animator = nil
+	if conAnimator ~= false then
+		animator = criarFalso("Animator")
+		animator.Parent = humanoide
+	end
+
+	modelo.Parent = workspace
+	return modelo, humanoide, animator
+end
+
+function __crearTrack(nombre, duracion)
+	return {
+		Animation = { Name = nombre, AnimationId = "rbxassetid://0000000000" },
+		Length = duracion,
+		IsPlaying = true,
+		TimePosition = 0,
+		WeightCurrent = 1,
+	}
+end
+
+function __crearArma(personaje)
+	local herramienta = criarFalso("Tool")
+	rawset(herramienta, "Name", "Espada")
+	herramienta.Parent = personaje
+	return herramienta
+end
+
+function __limpiarMundo()
+	rawset(workspace, "_children", {})
+	rawset(LocalPlayer, "Character", nil)
+	__teclas = {}
 end

@@ -19,7 +19,7 @@
 	Ninguna llamada que pueda fallar queda sin pcall.
 ]]
 
-local VERSION = "2.0.0"
+local VERSION = "2.2.0"
 
 --------------------------------------------------------------------
 -- 1. Servicios
@@ -295,6 +295,30 @@ if type(AP.setEnabled) ~= "function" then
 		return self.enabled
 	end
 end
+
+--------------------------------------------------------------------
+-- 7b. Motor de Auto Parry (modulo inyectado por el loader)
+--------------------------------------------------------------------
+
+local AutoParryModulo = nil
+
+do
+	local fuentes = rawget(_G, "__BH_MODULES")
+	if type(fuentes) == "table" and type(fuentes.autoparry) == "string" then
+		local chunk = loadstring(fuentes.autoparry, "@src/autoparry.lua")
+		if chunk then
+			local ok, modulo = pcall(chunk)
+			if ok and type(modulo) == "table" then
+				AutoParryModulo = modulo
+			else
+				print("[Brotherhood] autoparry.lua no cargo: " .. tostring(modulo))
+			end
+		end
+	end
+end
+
+local motorParry = nil
+local definirAutoParry = function() end
 
 --------------------------------------------------------------------
 -- 8. Barra de titulo
@@ -813,10 +837,11 @@ local toggleParry = crearToggle(paginaPrincipal, {
 			estadoTexto.Text = "Estado: " .. (estado and "activo" or "inactivo")
 			estadoTexto.TextColor3 = estado and Tema.exito or Tema.subtexto
 		end
+		definirAutoParry(estado)
 		if config.avisos then
 			notificar(
 				"Auto Parry",
-				estado and "Activado" or "Desactivado",
+				estado and "Motor activado" or "Motor desactivado",
 				estado and Tema.exito or Tema.peligro
 			)
 		end
@@ -942,6 +967,316 @@ crearBoton(paginaInfo, {
 }, y4, 1)
 
 --------------------------------------------------------------------
+-- Pagina: Parry (motor + diagnostico)
+--------------------------------------------------------------------
+
+local paginaParry = crearPagina("Parry")
+
+local scrollParry = nuevo("ScrollingFrame", {
+	Name = "Scroll",
+	Size = UDim2.new(1, 4, 1, 0),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 3,
+	ScrollBarImageColor3 = Tema.acento,
+	CanvasSize = UDim2.new(0, 0, 0, 560),
+	ScrollingDirection = Enum.ScrollingDirection.Y,
+}, paginaParry)
+
+local yp = 4
+yp = crearEncabezado(scrollParry, "Auto Parry", "Lobos y Dire Wolf - datos en vivo", yp)
+
+local ordenLineas = {}
+local etiquetas = {}
+
+local function anadirLinea(texto, color, clave)
+	local etiqueta = clave and etiquetas[clave] or nil
+
+	if etiqueta then
+		etiqueta.Text = texto
+		etiqueta.TextColor3 = color
+		return
+	end
+
+	etiqueta = nuevo("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 13),
+		BackgroundTransparency = 1,
+		Text = texto,
+		Font = Enum.Font.Code,
+		TextSize = 10,
+		TextColor3 = color,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		LayoutOrder = #ordenLineas,
+	}, nil)
+
+	if clave then
+		etiquetas[clave] = etiqueta
+	end
+	table.insert(ordenLineas, etiqueta)
+	return etiqueta
+end
+
+local registrarEvento = function() end
+local marcoLog = nil
+
+local cfgParry = nil
+if AutoParryModulo then
+	cfgParry = AutoParryModulo.configPorDefecto()
+	motorParry = AutoParryModulo.nuevo(cfgParry)
+	motorParry:onEvento(function(evento)
+		registrarEvento(evento)
+	end)
+else
+	crearTexto(scrollParry, "autoparry.lua no cargado: motor no disponible", yp, Tema.peligro)
+	yp = yp + 20
+end
+
+local toggleMotor
+
+definirAutoParry = function(estado)
+	if not AutoParryModulo or not motorParry then
+		notificar("Auto Parry", "Motor no disponible (modulo no cargado)", Tema.peligro)
+		toggleParry.definir(false)
+		if toggleMotor then
+			toggleMotor.definir(false)
+		end
+		return
+	end
+
+	if estado then
+		motorParry:iniciar()
+	else
+		motorParry:detener()
+	end
+
+	toggleParry.definir(estado)
+	if toggleMotor then
+		toggleMotor.definir(estado)
+	end
+	if estadoTexto then
+		estadoTexto.Text = "Estado: " .. (estado and "activo" or "inactivo")
+		estadoTexto.TextColor3 = estado and Tema.exito or Tema.subtexto
+	end
+end
+
+toggleMotor = crearToggle(scrollParry, {
+	texto = "Motor activo",
+	default = false,
+	callback = function(estado)
+		definirAutoParry(estado)
+	end,
+}, yp)
+yp = yp + 44
+
+crearToggle(scrollParry, {
+	texto = "Exigir arma equipada",
+	default = true,
+	callback = function(estado)
+		if cfgParry then
+			cfgParry.exigirArma = estado
+		end
+	end,
+}, yp)
+yp = yp + 44
+
+crearToggle(scrollParry, {
+	texto = "Diagnostico: mostrar animaciones ignoradas",
+	default = true,
+	callback = function(estado)
+		if cfgParry then
+			cfgParry.modoDiagnostico = estado
+		end
+	end,
+}, yp)
+yp = yp + 50
+
+crearSlider(scrollParry, {
+	texto = "Anticipacion (ms antes del impacto)",
+	min = 0,
+	max = 250,
+	default = 0,
+	formato = "%.0f ms",
+	callback = function(valor)
+		if cfgParry then
+			cfgParry.leadMs = valor
+		end
+	end,
+}, yp)
+yp = yp + 52
+
+crearSlider(scrollParry, {
+	texto = "Lobo: impacto (% de la animacion)",
+	min = 15,
+	max = 90,
+	default = 50,
+	formato = "%.0f%%",
+	callback = function(valor)
+		if cfgParry then
+			cfgParry.perfiles.wolf.impactoRelativo = valor / 100
+		end
+	end,
+}, yp)
+yp = yp + 52
+
+crearSlider(scrollParry, {
+	texto = "Dire Wolf: impacto (% de la animacion)",
+	min = 15,
+	max = 90,
+	default = 50,
+	formato = "%.0f%%",
+	callback = function(valor)
+		if cfgParry then
+			cfgParry.perfiles.direwolf.impactoRelativo = valor / 100
+		end
+	end,
+}, yp)
+yp = yp + 54
+
+crearBoton(scrollParry, {
+	texto = "Redetectar enemigos",
+	callback = function()
+		if motorParry then
+			local total = motorParry:refrescar()
+			notificar("Auto Parry", ("Enemigos vigilados: %d"):format(total), Tema.acento)
+		end
+	end,
+}, yp, 1)
+yp = yp + 40
+
+crearBoton(scrollParry, {
+	texto = "Limpiar registro",
+	callback = function()
+		if motorParry then
+			motorParry:limpiar()
+		end
+		for _, etiqueta in ipairs(ordenLineas) do
+			pcall(function()
+				etiqueta:Destroy()
+			end)
+		end
+		ordenLineas = {}
+		etiquetas = {}
+	end,
+}, yp, 1)
+yp = yp + 40
+
+crearBoton(scrollParry, {
+	texto = "Copiar captura (calibrar)",
+	callback = function()
+		if not motorParry then
+			notificar("Auto Parry", "Motor no disponible (modulo no cargado)", Tema.peligro)
+			return
+		end
+
+		local texto = motorParry:exportar()
+		print(texto)
+
+		if typeof(setclipboard) == "function" then
+			local ok = pcall(setclipboard, texto)
+			notificar(
+				"Auto Parry",
+				ok and "Captura copiada: pegala para calibrar" or "No se pudo copiar",
+				ok and Tema.exito or Tema.peligro
+			)
+		else
+			notificar("Auto Parry", "setclipboard no disponible: copia la consola", Tema.peligro)
+		end
+	end,
+}, yp, 1)
+yp = yp + 40
+
+marcoLog = nuevo("Frame", {
+	Size = UDim2.new(1, -8, 0, 132),
+	Position = UDim2.new(0, 0, 0, yp),
+	BackgroundColor3 = Color3.fromRGB(12, 12, 16),
+	BorderSizePixel = 0,
+	ClipsDescendants = true,
+}, scrollParry)
+
+esquinas(marcoLog, 8)
+borde(marcoLog, Tema.acento, 1, 0.75)
+
+nuevo("UIPadding", {
+	PaddingTop = UDim.new(0, 6),
+	PaddingBottom = UDim.new(0, 4),
+	PaddingLeft = UDim.new(0, 8),
+	PaddingRight = UDim.new(0, 6),
+}, marcoLog)
+
+nuevo("UIListLayout", {
+	Padding = UDim.new(0, 1),
+	SortOrder = Enum.SortOrder.LayoutOrder,
+}, marcoLog)
+
+for _, etiqueta in ipairs(ordenLineas) do
+	etiqueta.Parent = marcoLog
+end
+
+registrarEvento = function(evento)
+	if type(evento) ~= "table" or not marcoLog then
+		return
+	end
+
+	local hora = os.date("%H:%M:%S")
+	local color = Tema.subtexto
+	local texto
+	local clave = nil
+
+	if evento.soloDiagnostico then
+		texto = ("%s  ·  %s"):format(hora, tostring(evento.detalle))
+		if evento.resultado == "error" then
+			color = Tema.peligro
+		end
+	else
+		clave = evento.id
+		local estado = tostring(evento.resultado)
+
+		if estado == "pendiente" then
+			texto = ("%s  ATK  %s · %s · impacto %.2fs [%s]"):format(
+				hora, tostring(evento.enemigo), tostring(evento.animacion),
+				tonumber(evento.impacto) or 0, tostring(evento.fuenteTiempo or "?")
+			)
+			color = Tema.acento
+		elseif string.find(estado, "probable exito") then
+			texto = ("%s  OK   %s · %s"):format(hora, tostring(evento.enemigo), tostring(evento.detalle))
+			color = Tema.exito
+		elseif string.find(estado, "fallo") then
+			texto = ("%s  FAIL %s · %s %s"):format(
+				hora, tostring(evento.enemigo), estado, tostring(evento.detalle)
+			)
+			color = Tema.peligro
+		else
+			texto = ("%s  --   %s · %s %s"):format(
+				hora, tostring(evento.enemigo), estado, tostring(evento.detalle)
+			)
+			color = Tema.subtexto
+		end
+	end
+
+	local etiqueta = anadirLinea(texto, color, clave)
+	if etiqueta then
+		etiqueta.Parent = marcoLog
+	end
+
+	while #ordenLineas > 8 do
+		local viejo = table.remove(ordenLineas, 1)
+		if viejo then
+			for id, guardada in pairs(etiquetas) do
+				if guardada == viejo then
+					etiquetas[id] = nil
+				end
+			end
+			pcall(function()
+				viejo:Destroy()
+			end)
+		end
+	end
+end
+
+scrollParry.CanvasSize = UDim2.new(0, 0, 0, yp + 148)
+
+--------------------------------------------------------------------
 -- 12. Interaccion de la ventana
 --------------------------------------------------------------------
 
@@ -1029,9 +1364,10 @@ end)
 animar(introScale, { Scale = 1 }, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
 crearTab("Principal", "Principal", 1)
-crearTab("Ajustes", "Ajustes", 2)
-crearTab("Visuales", "Visuales", 3)
-crearTab("Info", "Info", 4)
+crearTab("Parry", "Parry", 2)
+crearTab("Ajustes", "Ajustes", 3)
+crearTab("Visuales", "Visuales", 4)
+crearTab("Info", "Info", 5)
 
 mostrarPagina("Principal")
 
@@ -1054,6 +1390,11 @@ _G.Brotherhood = {
 	end,
 	alternar = alternarVisible,
 	pagina = mostrarPagina,
+	parry = motorParry,
+	activarParry = definirAutoParry,
+	captura = function()
+		return motorParry and motorParry:exportar() or nil
+	end,
 }
 
 if config.avisos then
